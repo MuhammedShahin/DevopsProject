@@ -26,5 +26,9 @@
 	{
 		"ParameterKey": "WildCardAddress",
 		"ParameterValue": "0.0.0.0/0"
+	},
+	{
+		"ParameterKey": "Ubuntu20AMI",
+		"ParameterValue": "ami-0c4f7023847b90238"
 	}
 ]

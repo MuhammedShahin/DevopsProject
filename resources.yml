@@ -1,8 +1,4 @@
 Parameters:
-  # Paramenters are entirely optional.
-  # but using them will make your cloudformation templates more reusable
-  # use them for things that may change over time, such as instance type,
-  # VPCs and so on.
   EnvironmentName:
     Type: String
 
@@ -24,17 +20,10 @@ Parameters:
   WildCardAddress:
     Type: String
   
+  Ubuntu20AMI:
+    Type: String
+  
 Resources:
-  # instace profile contains the IAM Role name(s) that we want to associate to our auto scaling EC2 Servers
-  # never give too much permissions to your EC2 instances! if they get hacked, the permissions get hacked also!
-  # in this example, I create a Role called UdacityS3ReadOnlyC2 and just give it a policy of S3 Read-Only Access
-  
-  # ProfileWithRolesForOurApp:
-  #   Type: AWS::IAM::InstanceProfile
-  #   Properties: 
-  #     Roles:
-  #       - UdacityS3ReadOnlyEC2
-  
   VPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -69,15 +58,15 @@ Resources:
           Value: !Sub ${EnvironmentName} Public Subnet AZ1
   
   SecondPublicSubnet:
-      Type: AWS::EC2::Subnet
-      Properties:
-        VpcId: !Ref VPC
-        AvailabilityZone: !Select [1, !GetAZs '']
-        CidrBlock: !Ref SecondPublicSubnetCIDR
-        MapPublicIpOnLaunch: true
-        Tags:
-          - Key: name
-            Value: !Sub ${EnvironmentName} Public Subnet AZ2
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Ref SecondPublicSubnetCIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: name
+          Value: !Sub ${EnvironmentName} Public Subnet AZ2
   
   FirstPrivateSubnet:
     Type: AWS::EC2::Subnet
@@ -91,15 +80,15 @@ Resources:
           Value: !Sub ${EnvironmentName} Private Subnet AZ1
 
   SecondPrivateSubnet:
-      Type: AWS::EC2::Subnet
-      Properties:
-        VpcId: !Ref VPC
-        AvailabilityZone: !Select [1, !GetAZs '']
-        CidrBlock: !Ref SecondPrivateSubnetCIDR
-        MapPublicIpOnLaunch: false
-        Tags:
-          - Key: name
-            Value: !Sub ${EnvironmentName} Private Subnet AZ2
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Ref SecondPrivateSubnetCIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: name
+          Value: !Sub ${EnvironmentName} Private Subnet AZ2
   
   FirstEIP:
     Type: AWS::EC2::EIP
@@ -195,26 +184,123 @@ Resources:
       RouteTableId: !Ref SecondPrivateRouteTable
       SubnetId: !Ref SecondPrivateSubnet
 
+  LaodBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to load balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref WildCardAddress
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref WildCardAddress
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: !Ref WildCardAddress
   
-# Outputs: 
-  # This is also optional.
-  # Bonus points for useful outputs!
-  # for example, if you create a Load Balancer
-  # it's nice to output the URL to it here, so that we don't have to go to the console to get it.
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to servers
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref WildCardAddress
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: !Ref WildCardAddress
+  
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install apache2 -y
+          systemctl start apache2.service
+          cd /var/www/html
+          echo "Udacity Demo Web Server Up and Running!" > index.html
+      ImageId: !Ref Ubuntu20AMI
+      SecurityGroups:
+        - !Ref ServerSecurityGroup
+      InstanceType: t3.medium
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: '10'
 
-# Sample UserData
-# When creating your Launch Configuration, you may need a UserData script
-# here's one that you can use for Ubuntu Linux that will:
-# Install Apache Web Server, Start it, and create an index.html that will be displayed
-# when you visit the IP address of this server with your web browser
-#Here it is:
-#
-#          #!/bin/bash
-#          apt-get update -y
-#          apt-get install apache2 -y
-#          systemctl start apache2.service
-#          cd /var/www/html
-#          echo "Udacity Demo Web Server Up and Running!" > index.html
+  ServersAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref FirstPrivateSubnet
+        - !Ref SecondPrivateSubnet
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MinSize: '2'
+      MaxSize: '5'
+      TargetGroupARNs: 
+        - !Ref TargetGroup
+  
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - !Ref FirstPublicSubnet
+        - !Ref SecondPublicSubnet
+      SecurityGroups: 
+        - !Ref LaodBalancerSecurityGroup
+  
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+  
+  ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values: [/]
+      ListenerArn: !Ref Listener
+      Priority: 1
+  
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: !Ref VPC
 
 
-# This comment to test git.
+
+Outputs: 
+  LoadBalancer:
+    Value: !Ref LoadBalancer
+  
+  LoadBalancerURL:
+    Value: !GetAtt LoadBalancer.DNSName
